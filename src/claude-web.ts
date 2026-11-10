@@ -11,6 +11,37 @@
 export const MODEL_PROVIDER = "anthropic";
 export const MODEL_ID = "claude-haiku-5-5";
 
+/** Pi's Anthropic provider and the extra accounts pi-multi-account adds (`anthropic-account-2`, …). */
+const ACCOUNT_PATTERN = /^anthropic(?:-account-(\d+))?$/;
+
+function accountNumber(providerId: string): number | undefined {
+	const match = providerId.match(ACCOUNT_PATTERN);
+	return match ? Number(match[1] ?? 1) : undefined;
+}
+
+/**
+ * The Claude accounts to try, in order: the one the chat is on first (so the search counts against
+ * the same limits as the chat), then the rest by account number. Only signed-in accounts are passed in.
+ */
+export function accountOrder(signedIn: readonly string[], chatProvider: string | undefined): string[] {
+	const accounts = [...new Set(signedIn)]
+		.filter((id) => accountNumber(id) !== undefined)
+		.sort((a, b) => accountNumber(a)! - accountNumber(b)!);
+	if (!chatProvider || !accounts.includes(chatProvider)) return accounts;
+	return [chatProvider, ...accounts.filter((id) => id !== chatProvider)];
+}
+
+const ACCOUNT_FAILURE =
+	/usage.?limit|rate.?limit|too many requests|\b429\b|quota|limit (?:reached|exceeded)|\b401\b|unauthori[sz]ed|authentication.?error|invalid_grant|refresh token|OAuth refresh failed|No API key/i;
+
+/**
+ * Whether a failed side request is about the account (its limit or its sign-in), so another account
+ * may succeed. Anything else, such as a bad URL or an outage, would fail on every account.
+ */
+export function isAccountFailure(message: string): boolean {
+	return ACCOUNT_FAILURE.test(message);
+}
+
 export const WEB_SEARCH_TYPE = "web_search_20260318";
 export const WEB_FETCH_TYPE = "web_fetch_20260318";
 

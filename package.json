@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Web search and web fetch for Pi through your Claude account, using Anthropic's server-side tools.",
   "type": "module",
   "license": "MIT",

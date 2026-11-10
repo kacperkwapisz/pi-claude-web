@@ -26,6 +26,13 @@ config"). The model gets two tools:
 
 Each call reports its tokens, so Pi's session totals include them.
 
+## Which Claude account it uses
+
+With several Claude accounts ([pi-multi-account](https://github.com/kacperkwapisz/pi-multi-account)),
+each call runs on the account the chat is on, so it counts against the same limits. When the chat
+isn't on Claude, it starts at account 1. If that account is at its limit or signed out, the next
+signed-in account takes over; other errors are reported as they are.
+
 ## How it works
 
 | | `web_search` | `web_fetch` |

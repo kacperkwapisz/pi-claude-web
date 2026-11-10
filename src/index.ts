@@ -1,11 +1,13 @@
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	accountOrder,
 	addServerTool,
 	answerText,
 	capAnswer,
 	FETCH_SYSTEM,
 	fetchRequest,
+	isAccountFailure,
 	MODEL_ID,
 	MODEL_PROVIDER,
 	normalizeUrl,
@@ -15,9 +17,21 @@ import {
 	webSearchTool,
 } from "./claude-web.ts";
 
+function errorText(error: unknown): string {
+	const parts: string[] = [];
+	for (let current = error, depth = 0; current && depth < 5; depth++) {
+		parts.push(current instanceof Error ? current.message : String(current));
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	return parts.join(": ");
+}
+
 /**
  * One side request to the small Claude model with a server tool added. Pi resolves the Claude sign-in
  * (and refreshes it) itself, so no token is ever read or refreshed here.
+ *
+ * It runs on the Claude account the chat is on, so it counts against the same limits. When that
+ * account is at its limit or signed out, the next signed-in account takes over.
  */
 async function ask(
 	ctx: ExtensionContext,
@@ -26,21 +40,42 @@ async function ask(
 	tool: Record<string, unknown>,
 	signal: AbortSignal | undefined,
 ) {
-	const model = ctx.modelRegistry.find(MODEL_PROVIDER, MODEL_ID);
-	if (!model) throw new Error(`Pi doesn't know ${MODEL_PROVIDER}/${MODEL_ID}. Update Pi.`);
-	if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+	const signedIn = ctx.modelRegistry
+		.getAvailable()
+		.filter((model) => model.id === MODEL_ID)
+		.map((model) => model.provider);
+	const accounts = accountOrder(signedIn, ctx.model?.provider);
+	if (accounts.length === 0) {
+		if (!ctx.modelRegistry.find(MODEL_PROVIDER, MODEL_ID)) throw new Error(`Pi doesn't know ${MODEL_PROVIDER}/${MODEL_ID}. Update Pi.`);
 		throw new Error("No Claude account is signed in. Run /login and choose Anthropic.");
 	}
-	const message = await ctx.modelRegistry.complete(
-		model,
-		{ systemPrompt, messages: [{ role: "user", content: request, timestamp: Date.now() }] },
-		{ signal, onPayload: (payload) => addServerTool(payload, tool) },
-	);
-	if (message.stopReason === "aborted") throw new Error("Cancelled.");
-	if (message.stopReason === "error") throw new Error(message.errorMessage ?? "The Claude request failed.");
-	const text = answerText(message.content);
-	if (!text) throw new Error("Claude returned no answer.");
-	return { text: capAnswer(text), usage: message.usage };
+
+	let lastError = "The Claude request failed.";
+	for (const provider of accounts) {
+		const model = ctx.modelRegistry.find(provider, MODEL_ID)!;
+		let failure: string;
+		try {
+			const message = await ctx.modelRegistry.complete(
+				model,
+				{ systemPrompt, messages: [{ role: "user", content: request, timestamp: Date.now() }] },
+				{ signal, onPayload: (payload) => addServerTool(payload, tool) },
+			);
+			if (message.stopReason === "aborted") throw new Error("Cancelled.");
+			if (message.stopReason !== "error") {
+				const text = answerText(message.content);
+				if (!text) throw new Error("Claude returned no answer.");
+				return { text: capAnswer(text), usage: message.usage, provider };
+			}
+			failure = message.errorMessage ?? "The Claude request failed.";
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Cancelled.");
+			failure = errorText(error);
+			if (!isAccountFailure(failure)) throw error;
+		}
+		lastError = failure;
+		if (!isAccountFailure(failure)) break;
+	}
+	throw new Error(lastError);
 }
 
 const webSearch = defineTool({
@@ -66,8 +101,8 @@ const webSearch = defineTool({
 		const query = params.query.trim();
 		if (!query) throw new Error("A search query is required.");
 		const tool = webSearchTool({ allowedDomains: params.allowed_domains, blockedDomains: params.blocked_domains });
-		const { text, usage } = await ask(ctx, SEARCH_SYSTEM, searchRequest(query), tool, signal);
-		return { content: [{ type: "text", text }], details: { query }, usage };
+		const { text, usage, provider } = await ask(ctx, SEARCH_SYSTEM, searchRequest(query), tool, signal);
+		return { content: [{ type: "text", text }], details: { query, provider }, usage };
 	},
 });
 
@@ -87,8 +122,8 @@ const webFetch = defineTool({
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		const url = normalizeUrl(params.url);
 		const prompt = params.prompt.trim() || "Summarise the page.";
-		const { text, usage } = await ask(ctx, FETCH_SYSTEM, fetchRequest(url, prompt), webFetchTool(), signal);
-		return { content: [{ type: "text", text }], details: { url }, usage };
+		const { text, usage, provider } = await ask(ctx, FETCH_SYSTEM, fetchRequest(url, prompt), webFetchTool(), signal);
+		return { content: [{ type: "text", text }], details: { url, provider }, usage };
 	},
 });
 

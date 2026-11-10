@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	accountOrder,
 	addServerTool,
 	answerText,
 	capAnswer,
 	fetchRequest,
+	isAccountFailure,
 	MAX_ANSWER_CHARS,
 	normalizeUrl,
 	webFetchTool,
@@ -74,4 +76,28 @@ test("capAnswer truncates with a note", () => {
 	const long = capAnswer("x".repeat(MAX_ANSWER_CHARS + 10));
 	assert.match(long, /\[Answer truncated/);
 	assert.ok(long.length < MAX_ANSWER_CHARS + 60);
+});
+
+test("the chat's Claude account goes first, then the rest by number", () => {
+	const signedIn = ["anthropic-account-3", "anthropic", "openai", "anthropic-account-10", "anthropic-account-2"];
+	assert.deepEqual(accountOrder(signedIn, "anthropic-account-3"), [
+		"anthropic-account-3",
+		"anthropic",
+		"anthropic-account-2",
+		"anthropic-account-10",
+	]);
+	// A chat on another provider, or on an account that isn't signed in, starts at account 1.
+	assert.deepEqual(accountOrder(signedIn, "openai"), ["anthropic", "anthropic-account-2", "anthropic-account-3", "anthropic-account-10"]);
+	assert.deepEqual(accountOrder(["anthropic-account-2"], "anthropic"), ["anthropic-account-2"]);
+	assert.deepEqual(accountOrder([], "anthropic"), []);
+});
+
+test("limits and lost sign-ins move to the next account; other failures don't", () => {
+	assert.equal(isAccountFailure('429 {"type":"error","error":{"type":"rate_limit_error"}}'), true);
+	assert.equal(isAccountFailure("Claude AI usage limit reached|1791500000"), true);
+	assert.equal(isAccountFailure('401 {"type":"error","error":{"type":"authentication_error"}}'), true);
+	assert.equal(isAccountFailure("OAuth refresh failed for anthropic-account-3: invalid_grant: Refresh token expired"), true);
+	assert.equal(isAccountFailure("529 Overloaded"), false);
+	assert.equal(isAccountFailure("Request timed out."), false);
+	assert.equal(isAccountFailure("400 invalid_request_error: url not allowed"), false);
 });
